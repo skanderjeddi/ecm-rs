@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 color-backtrace = "0.5.1"
+colored = "2.0.0"
 log = "0.4.17"
 num-bigint = { version = "0.4.3", features = [ "rand" ] }
 num-integer = "0.1.45"
