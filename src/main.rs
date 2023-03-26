@@ -4,7 +4,7 @@ use std::{
 };
 
 use colored::Colorize;
-use log::info;
+use log::{info, debug};
 
 use num_bigint::{BigInt, RandBigInt};
 use num_integer::Integer;
@@ -51,7 +51,7 @@ impl ECM {
         while b <= Zero::zero() {
             b += n.clone();
         }
-        info!(
+        debug!(
             "y^2 = x^3 + {}x + {} [{}]",
             a.to_string().bright_red(),
             b.to_string().bright_red(),
@@ -145,8 +145,8 @@ fn main() {
     }
     pretty_env_logger::init();
     color_backtrace::install();
-    let prime1 = "4094231".parse::<BigInt>().unwrap();
-    let prime2 = "97114109".parse::<BigInt>().unwrap();
+    let prime1 = "395246712037".parse::<BigInt>().unwrap();
+    let prime2 = "241364332607".parse::<BigInt>().unwrap();
     let n = prime1.clone() * prime2.clone();
     info!(
         "{} = {} * {} = {}",
@@ -159,13 +159,13 @@ fn main() {
     let total_time = Instant::now();
     loop {
         let mut factor_found = false;
-        info!("Iteration {}", i.to_string().underline());
+        debug!("Iteration {}", i.to_string().underline());
         let ecm = ECM::new(n.clone());
         let p = ecm.get_point_on_curve();
         let p = p.clone();
         let mut q = p.clone();
-        let b = 2 * 3 * 5 * 7 * 11 * 13 * 17;
-        info!(
+        let b = 2 * 3 * 5 * 7;
+        debug!(
             "({}, {}) = (({}, {}), {})",
             "P".cyan(),
             "B".magenta(),
@@ -178,11 +178,11 @@ fn main() {
             if found {
                 let factor = r.x;
                 if factor == prime1 {
-                    info!("Found factor: {}", factor.to_string().blue());
+                    info!("Found factor {} at iteration {}", factor.to_string().blue(), i.to_string().green());
                     factor_found = true;
                     break;
                 } else {
-                    info!("Found factor: {}", factor.to_string().yellow());
+                    info!("Found factor {} at iteration {}", factor.to_string().yellow(), i.to_string().green());
                     factor_found = true;
                     break;
                 }
@@ -191,7 +191,7 @@ fn main() {
         }
         i += 1;
         if !factor_found {
-            info!("No factors found with this pair (P, B)");
+            debug!("No factors found with this pair (P, B)");
             continue;
         } else {
             break;
