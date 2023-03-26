@@ -13,12 +13,12 @@ use primes::{PrimeSet, Sieve};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-struct ECMPoint {
+struct Point {
     x: BigInt,
     y: BigInt,
 }
 
-impl Display for ECMPoint {
+impl Display for Point {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let (x, y) = (self.x.clone(), self.y.clone());
         write!(f, "({x}, {y})")
@@ -26,20 +26,20 @@ impl Display for ECMPoint {
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-struct ECM {
+struct EllipticCurveFactorizationMethod {
     n: BigInt,
     a: BigInt,
     b: BigInt,
 }
 
-impl Display for ECM {
+impl Display for EllipticCurveFactorizationMethod {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let (n, a, b) = (self.n.clone(), self.a.clone(), self.b.clone());
         write!(f, "({a}, {b}) [{n}])")
     }
 }
 
-impl ECM {
+impl EllipticCurveFactorizationMethod {
     fn new(n: BigInt) -> Self {
         let mut rng = rand::thread_rng();
         let x0 = rng.gen_bigint_range(&BigInt::from(2u8), &n);
@@ -59,12 +59,12 @@ impl ECM {
         Self { n, a, b }
     }
 
-    fn get_point_on_curve(&self) -> ECMPoint {
+    fn get_point_on_curve(&self) -> Point {
         let mut rng = rand::thread_rng();
         let x = rng.gen_bigint_range(&BigInt::from(2u32), &self.n);
         let y_squared = (x.pow(3) + self.a.clone() * x.clone() + self.b.clone()) % self.n.clone();
         let y = y_squared.sqrt();
-        ECMPoint { x, y }
+        Point { x, y }
     }
 
     #[inline(always)]
@@ -88,7 +88,7 @@ impl ECM {
     }
 
     #[inline(always)]
-    fn add_points(&self, p: &ECMPoint, q: &ECMPoint) -> (bool, ECMPoint) {
+    fn add_points(&self, p: &Point, q: &Point) -> (bool, Point) {
         let (x1, y1) = (p.x.clone(), p.y.clone());
         let (x2, y2) = (q.x.clone(), q.y.clone());
         let x3: BigInt;
@@ -112,13 +112,13 @@ impl ECM {
         if x != One::one() {
             x3 = x.clone();
             y3 = self.n.clone() / x;
-            return (true, ECMPoint { x: x3, y: y3 });
+            return (true, Point { x: x3, y: y3 });
         }
         let x = denominator.gcd(&self.n);
         if x != One::one() {
             x3 = x.clone();
             y3 = self.n.clone() / x;
-            return (true, ECMPoint { x: x3, y: y3 });
+            return (true, Point { x: x3, y: y3 });
         }
         let slope = (numerator.clone() * self.modular_inverse(denominator.clone())).abs();
         let slope = slope % self.n.clone();
@@ -136,7 +136,7 @@ impl ECM {
             ry += self.n.clone();
         }
         ry %= self.n.clone();
-        (false, ECMPoint { x: rx, y: ry })
+        (false, Point { x: rx, y: ry })
     }
 }
 
@@ -202,8 +202,8 @@ fn main() {
         let factor = (0..number_of_curves)
             .into_par_iter()
             .map(|_| {
-                let ecm = ECM::new(n.clone());
-                ecm
+                
+                EllipticCurveFactorizationMethod::new(n.clone())
             })
             .into_par_iter()
             .map(|ecm| {
