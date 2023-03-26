@@ -7,11 +7,15 @@ edition = "2021"
 
 [dependencies]
 color-backtrace = "0.5.1"
-colored = "2.0.0"
 log = "0.4.17"
 num-bigint = { version = "0.4.3", features = [ "rand" ] }
 num-integer = "0.1.45"
 num-traits = "0.2.15"
+num_cpus = "1.15.0"
 pretty_env_logger = "0.4.0"
 primes = "0.3.0"
 rand = "0.8.5"
+rayon = "1.7.0"
+
+[profile.release]
+lto = true

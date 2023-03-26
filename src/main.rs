@@ -1,16 +1,17 @@
 use std::{
+    env::args,
     fmt::{Display, Formatter},
     time::Instant,
 };
 
-use colored::Colorize;
-use log::{info, debug};
+use log::info;
 
 use num_bigint::{BigInt, RandBigInt};
 use num_integer::Integer;
 use num_traits::{One, Signed, Zero};
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct ECMPoint {
     x: BigInt,
     y: BigInt,
@@ -19,19 +20,22 @@ struct ECMPoint {
 impl Display for ECMPoint {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let (x, y) = (self.x.clone(), self.y.clone());
-        write!(
-            f,
-            "({}, {})",
-            x.to_string().bright_red(),
-            y.to_string().bright_red()
-        )
+        write!(f, "({x}, {y})")
     }
 }
 
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct ECM {
     n: BigInt,
     a: BigInt,
     b: BigInt,
+}
+
+impl Display for ECM {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let (n, a, b) = (self.n.clone(), self.a.clone(), self.b.clone());
+        write!(f, "({a}, {b}) [{n}])")
+    }
 }
 
 impl ECM {
@@ -40,23 +44,17 @@ impl ECM {
         let x0 = rng.gen_bigint_range(&BigInt::from(2u8), &n);
         let y0 = rng.gen_bigint_range(&BigInt::from(2u8), &n);
         let a = rng.gen_bigint_range(&BigInt::from(2u8), &n);
-        let y0s = y0.pow(2) % n.clone();
-        let x0c = x0.pow(3) % n.clone();
-        let ax0 = (a.clone() * x0.clone()) % n.clone();
-        let mut y0smx0c: BigInt = y0s.clone() - x0c.clone();
-        while y0smx0c <= Zero::zero() {
-            y0smx0c += n.clone();
+        let y0_squared = y0.pow(2) % n.clone();
+        let x0_cubed = x0.pow(3) % n.clone();
+        let a_x0 = (a.clone() * x0.clone()) % n.clone();
+        let mut first_term: BigInt = y0_squared.clone() - x0_cubed.clone();
+        while first_term <= Zero::zero() {
+            first_term += n.clone();
         }
-        let mut b: BigInt = y0smx0c.clone() - ax0.clone();
+        let mut b: BigInt = first_term.clone() - a_x0.clone();
         while b <= Zero::zero() {
             b += n.clone();
         }
-        debug!(
-            "y^2 = x^3 + {}x + {} [{}]",
-            a.to_string().bright_red(),
-            b.to_string().bright_red(),
-            n.to_string().green()
-        );
         Self { n, a, b }
     }
 
@@ -68,6 +66,7 @@ impl ECM {
         ECMPoint { x, y }
     }
 
+    #[inline(always)]
     fn modular_inverse(&self, p: BigInt) -> BigInt {
         let m0 = self.n.clone();
         if m0 == One::one() {
@@ -87,6 +86,7 @@ impl ECM {
         inv
     }
 
+    #[inline(always)]
     fn add_points(&self, p: &ECMPoint, q: &ECMPoint) -> (bool, ECMPoint) {
         let (x1, y1) = (p.x.clone(), p.y.clone());
         let (x2, y2) = (q.x.clone(), q.y.clone());
@@ -126,11 +126,11 @@ impl ECM {
             rx += self.n.clone();
         }
         rx = rx % self.n.clone();
-        let mut x1mrx = x1.clone() - rx.clone();
-        while x1mrx < Zero::zero() {
-            x1mrx += self.n.clone();
+        let mut second_factor = x1.clone() - rx.clone();
+        while second_factor < Zero::zero() {
+            second_factor += self.n.clone();
         }
-        let mut ry = slope.clone() * (x1mrx) - y1.clone();
+        let mut ry = slope.clone() * (second_factor) - y1.clone();
         while ry < Zero::zero() {
             ry += self.n.clone();
         }
@@ -139,66 +139,58 @@ impl ECM {
     }
 }
 
-fn main() {
+fn setup() {
     if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "info");
+        std::env::set_var("RUST_LOG", "debug");
     }
     pretty_env_logger::init();
     color_backtrace::install();
-    let prime1 = "395246712037".parse::<BigInt>().unwrap();
-    let prime2 = "241364332607".parse::<BigInt>().unwrap();
-    let n = prime1.clone() * prime2.clone();
-    info!(
-        "{} = {} * {} = {}",
-        "N".green(),
-        prime1.to_string().blue(),
-        prime2.to_string().yellow(),
-        n.to_string().green()
-    );
-    let mut i = 1;
+}
+
+fn main() {
+    setup();
+
+    let n = args()
+        .nth(1)
+        .expect("Usage: ecm-rs <number>")
+        .parse::<BigInt>()
+        .expect("Failed to parse number");
+
+    info!("Factorizing {}...", n);
+
     let total_time = Instant::now();
+
     loop {
-        let mut factor_found = false;
-        debug!("Iteration {}", i.to_string().underline());
-        let ecm = ECM::new(n.clone());
-        let p = ecm.get_point_on_curve();
-        let p = p.clone();
-        let mut q = p.clone();
-        let b = 2 * 3 * 5 * 7;
-        debug!(
-            "({}, {}) = (({}, {}), {})",
-            "P".cyan(),
-            "B".magenta(),
-            p.x.to_string().cyan(),
-            p.y.to_string().cyan(),
-            b.to_string().bright_magenta()
-        );
-        for _ in 2..=b {
-            let (found, r) = ecm.add_points(&p, &q);
-            if found {
-                let factor = r.x;
-                if factor == prime1 {
-                    info!("Found factor {} at iteration {}", factor.to_string().blue(), i.to_string().green());
-                    factor_found = true;
-                    break;
-                } else {
-                    info!("Found factor {} at iteration {}", factor.to_string().yellow(), i.to_string().green());
-                    factor_found = true;
-                    break;
-                }
-            }
-            q = r.clone();
+        let number_curves = 64;
+        // Generate number_curves random curves
+        let mut curves = Vec::<ECM>::with_capacity(number_curves);
+        for _ in 0..number_curves {
+            curves.push(ECM::new(n.clone()));
         }
-        i += 1;
-        if !factor_found {
-            debug!("No factors found with this pair (P, B)");
-            continue;
-        } else {
+
+        let friability_factor = 1024;
+
+        let factor = curves
+            .into_par_iter()
+            .map(|ecm| {
+                let p = ecm.get_point_on_curve();
+                let p = p.clone();
+                let mut q = p.clone();
+                for _ in 2..=friability_factor {
+                    let (found, r) = ecm.add_points(&p, &q);
+                    if found {
+                        return r.x;
+                    }
+                    q = r.clone();
+                }
+                Zero::zero()
+            })
+            .find_any(|x| x.clone() != Zero::zero());
+
+        if let Some(factor) = factor {
+            let time = total_time.elapsed();
+            info!("Found factor {factor} in {time:?}",);
             break;
         }
     }
-    info!(
-        "Total time: {}ms",
-        total_time.elapsed().as_millis().to_string().bright_green()
-    );
 }
