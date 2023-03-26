@@ -4,11 +4,12 @@ use std::{
     time::Instant,
 };
 
-use log::info;
+use log::{debug, info};
 
 use num_bigint::{BigInt, RandBigInt};
 use num_integer::Integer;
 use num_traits::{One, Signed, Zero};
+use primes::{PrimeSet, Sieve};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -46,12 +47,12 @@ impl ECM {
         let a = rng.gen_bigint_range(&BigInt::from(2u8), &n);
         let y0_squared = y0.pow(2) % n.clone();
         let x0_cubed = x0.pow(3) % n.clone();
-        let a_x0 = (a.clone() * x0.clone()) % n.clone();
-        let mut first_term: BigInt = y0_squared.clone() - x0_cubed.clone();
+        let a_x0 = (a.clone() * x0) % n.clone();
+        let mut first_term: BigInt = y0_squared - x0_cubed;
         while first_term <= Zero::zero() {
             first_term += n.clone();
         }
-        let mut b: BigInt = first_term.clone() - a_x0.clone();
+        let mut b: BigInt = first_term.clone() - a_x0;
         while b <= Zero::zero() {
             b += n.clone();
         }
@@ -98,7 +99,7 @@ impl ECM {
             numerator = BigInt::from(3u8) * x1.pow(2) + self.a.clone();
             denominator = BigInt::from(2u8) * y1.clone();
         } else {
-            numerator = y2.clone() - y1.clone();
+            numerator = y2 - y1.clone();
             while numerator < Zero::zero() {
                 numerator += self.n.clone();
             }
@@ -110,32 +111,32 @@ impl ECM {
         let x = numerator.gcd(&self.n);
         if x != One::one() {
             x3 = x.clone();
-            y3 = self.n.clone() / x.clone();
+            y3 = self.n.clone() / x;
             return (true, ECMPoint { x: x3, y: y3 });
         }
         let x = denominator.gcd(&self.n);
         if x != One::one() {
             x3 = x.clone();
-            y3 = self.n.clone() / x.clone();
+            y3 = self.n.clone() / x;
             return (true, ECMPoint { x: x3, y: y3 });
         }
-        let slope = (numerator.clone() * self.modular_inverse(denominator.clone()).clone()).abs();
+        let slope = (numerator.clone() * self.modular_inverse(denominator.clone())).abs();
         let slope = slope % self.n.clone();
-        let mut rx = slope.pow(2) - x1.clone() - x2.clone();
+        let mut rx = slope.pow(2) - x1.clone() - x2;
         while rx < Zero::zero() {
             rx += self.n.clone();
         }
-        rx = rx % self.n.clone();
-        let mut second_factor = x1.clone() - rx.clone();
+        rx %= self.n.clone();
+        let mut second_factor = x1 - rx.clone();
         while second_factor < Zero::zero() {
             second_factor += self.n.clone();
         }
-        let mut ry = slope.clone() * (second_factor) - y1.clone();
+        let mut ry = slope * (second_factor) - y1;
         while ry < Zero::zero() {
             ry += self.n.clone();
         }
-        ry = ry % self.n.clone();
-        return (false, ECMPoint { x: rx, y: ry });
+        ry %= self.n.clone();
+        (false, ECMPoint { x: rx, y: ry })
     }
 }
 
@@ -156,32 +157,67 @@ fn main() {
         .parse::<BigInt>()
         .expect("Failed to parse number");
 
-    info!("Factorizing {}...", n);
+    info!(
+        "Factorizing N = {} (using {} threads)...",
+        n,
+        rayon::current_num_threads()
+    );
+
+    let friability_factor = 128;
+
+    debug!(
+        "Finding primes up to friability factor ({})...",
+        friability_factor
+    );
+    let mut sieve = Sieve::new();
+    let primes = sieve
+        .iter()
+        .take_while(|p| p <= &friability_factor)
+        .collect::<Vec<_>>();
+    debug!("Found primes: {:?}.", primes);
+    debug!(
+        "Finding exponent of primes for friability factor ({})...",
+        friability_factor
+    );
+    let mut primes_exponents = Vec::with_capacity(primes.len());
+    for prime in &primes {
+        let mut e = 1;
+        while prime.pow(e) <= friability_factor {
+            e += 1;
+        }
+        primes_exponents.push(e - 1);
+    }
+    debug!("Found exponents: {:?}.", primes_exponents);
+
+    let primes_and_exponents = primes
+        .iter()
+        .zip(primes_exponents.iter())
+        .collect::<Vec<_>>();
+
+    info!("Starting factorization...");
 
     let total_time = Instant::now();
-
+    let number_of_curves = 128;
     loop {
-        let number_curves = 64;
-        // Generate number_curves random curves
-        let mut curves = Vec::<ECM>::with_capacity(number_curves);
-        for _ in 0..number_curves {
-            curves.push(ECM::new(n.clone()));
-        }
-
-        let friability_factor = 1024;
-
-        let factor = curves
+        let factor = (0..number_of_curves)
+            .into_par_iter()
+            .map(|_| {
+                let ecm = ECM::new(n.clone());
+                ecm
+            })
             .into_par_iter()
             .map(|ecm| {
                 let p = ecm.get_point_on_curve();
-                let p = p.clone();
+                let p = p;
                 let mut q = p.clone();
-                for _ in 2..=friability_factor {
-                    let (found, r) = ecm.add_points(&p, &q);
-                    if found {
-                        return r.x;
+                for (&prime, &e) in primes_and_exponents.iter() {
+                    for _ in 0..prime.pow(e - 1) {
+                        let (found, r) = ecm.add_points(&p, &q);
+                        if found {
+                            return r.x;
+                        }
+                        q = r.clone();
                     }
-                    q = r.clone();
                 }
                 Zero::zero()
             })
