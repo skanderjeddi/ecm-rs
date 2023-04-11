@@ -8,9 +8,12 @@ use log::{debug, info};
 
 use num_bigint::{BigInt, RandBigInt};
 use num_integer::Integer;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Zero};
 use primes::{PrimeSet, Sieve};
-use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use rayon::{
+    current_thread_index,
+    prelude::{IntoParallelIterator, ParallelIterator},
+};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct Point {
@@ -45,17 +48,7 @@ impl EllipticCurveFactorizationMethod {
         let x0 = rng.gen_bigint_range(&BigInt::from(2u8), &n);
         let y0 = rng.gen_bigint_range(&BigInt::from(2u8), &n);
         let a = rng.gen_bigint_range(&BigInt::from(2u8), &n);
-        let y0_squared = y0.pow(2) % n.clone();
-        let x0_cubed = x0.pow(3) % n.clone();
-        let a_x0 = (a.clone() * x0) % n.clone();
-        let mut first_term: BigInt = y0_squared - x0_cubed;
-        while first_term <= Zero::zero() {
-            first_term += n.clone();
-        }
-        let mut b: BigInt = first_term.clone() - a_x0;
-        while b <= Zero::zero() {
-            b += n.clone();
-        }
+        let b: BigInt = (y0.pow(2) - x0.pow(3) - a.clone() * x0) % n.clone();
         Self { n, a, b }
     }
 
@@ -81,9 +74,6 @@ impl EllipticCurveFactorizationMethod {
             std::mem::swap(&mut a, &mut m);
             std::mem::swap(&mut x0, &mut inv)
         }
-        if inv < Zero::zero() {
-            inv += m0
-        }
         inv
     }
 
@@ -93,20 +83,14 @@ impl EllipticCurveFactorizationMethod {
         let (x2, y2) = (q.x.clone(), q.y.clone());
         let x3: BigInt;
         let y3: BigInt;
-        let mut numerator: BigInt;
-        let mut denominator: BigInt;
+        let numerator: BigInt;
+        let denominator: BigInt;
         if x1 == x2 {
             numerator = BigInt::from(3u8) * x1.pow(2) + self.a.clone();
             denominator = BigInt::from(2u8) * y1.clone();
         } else {
-            numerator = y2 - y1.clone();
-            while numerator < Zero::zero() {
-                numerator += self.n.clone();
-            }
-            denominator = x2.clone() - x1.clone();
-            while denominator < Zero::zero() {
-                denominator += self.n.clone();
-            }
+            numerator = (y2 - y1.clone()) % self.n.clone();
+            denominator = (x2.clone() - x1.clone()) % self.n.clone();
         }
         let x = numerator.gcd(&self.n);
         if x != One::one() {
@@ -120,29 +104,41 @@ impl EllipticCurveFactorizationMethod {
             y3 = self.n.clone() / x;
             return (true, Point { x: x3, y: y3 });
         }
-        let slope = (numerator.clone() * self.modular_inverse(denominator.clone())).abs();
-        let slope = slope % self.n.clone();
-        let mut rx = slope.pow(2) - x1.clone() - x2;
-        while rx < Zero::zero() {
-            rx += self.n.clone();
-        }
-        rx %= self.n.clone();
-        let mut second_factor = x1 - rx.clone();
-        while second_factor < Zero::zero() {
-            second_factor += self.n.clone();
-        }
-        let mut ry = slope * (second_factor) - y1;
-        while ry < Zero::zero() {
-            ry += self.n.clone();
-        }
-        ry %= self.n.clone();
+        let slope =
+            (numerator.clone() * self.modular_inverse(denominator.clone())) % self.n.clone();
+        let rx = (slope.pow(2) - x1.clone() - x2) % self.n.clone();
+        let second_factor = (x1 - rx.clone()) % self.n.clone();
+        let ry = slope * (second_factor) - y1;
         (false, Point { x: rx, y: ry })
+    }
+
+    fn point_multiplication(&self, p: &Point, k: &BigInt) -> (bool, Point) {
+        let q = p.clone();
+        let mut r = Point {
+            x: Zero::zero(),
+            y: Zero::zero(),
+        };
+        let mut found_factor = false;
+        let mut i = k.bits() - 1;
+        while i > 0 {
+            r = self.add_points(&r, &r).1;
+            if k.bit(i) {
+                let (found, result) = self.add_points(&r, &q);
+                if found {
+                    found_factor = true;
+                    return (found_factor, result);
+                }
+                r = result;
+            }
+            i -= 1;
+        }
+        (found_factor, r)
     }
 }
 
 fn setup() {
     if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "debug");
+        std::env::set_var("RUST_LOG", "info");
     }
     pretty_env_logger::init();
     color_backtrace::install();
@@ -157,60 +153,90 @@ fn main() {
         .parse::<BigInt>()
         .expect("Failed to parse number");
 
+    /* let num_digits = n.to_str_radix(10).len() as f64;
+    let b1 = num_digits.sqrt() * (n.bits() as f64);
+    let b1 = E.powf((b1.ln() * (b1.ln()).ln()) as f32) as u64; */
+
+    let b1 = 5 * 7 * 11 * 17 * 23;
+
     info!(
-        "Factorizing N = {} (using {} threads)...",
+        "Factorizing N = {} (using {} threads, B1 = {})...",
         n,
-        rayon::current_num_threads()
+        rayon::current_num_threads(),
+        b1
     );
 
-    let friability_factor = 128;
+    let total_time = Instant::now();
 
-    debug!(
-        "Finding primes up to friability factor ({})...",
-        friability_factor
-    );
+    debug!("Finding primes up to friability factor ({})...", b1);
+
     let mut sieve = Sieve::new();
-    let primes = sieve
-        .iter()
-        .take_while(|p| p <= &friability_factor)
-        .collect::<Vec<_>>();
-    debug!("Found primes: {:?}.", primes);
-    debug!(
-        "Finding exponent of primes for friability factor ({})...",
-        friability_factor
-    );
+    let primes_iter = sieve.iter();
+
+    /* let mut product = 1;
+    while product < b1 {
+        let prime = primes_iter.next().unwrap();
+        product *= prime;
+        primes.push(prime);
+    } */
+
+    let primes: Vec<u64> = primes_iter.take_while(|p| p <= &b1).collect();
+
     let mut primes_exponents = Vec::with_capacity(primes.len());
     for prime in &primes {
         let mut e = 1;
-        while prime.pow(e) <= friability_factor {
+        while prime.pow(e) <= b1 {
             e += 1;
         }
-        primes_exponents.push(e - 1);
+        primes_exponents.push(e);
     }
-    debug!("Found exponents: {:?}.", primes_exponents);
 
-    let primes_and_exponents = primes
+    let primes_raised = primes
         .iter()
         .zip(primes_exponents.iter())
+        .map(|(&p, &e)| BigInt::from(p.pow(e)))
         .collect::<Vec<_>>();
 
-    info!("Starting factorization...");
+    debug!("{:?}", primes_raised);
 
-    let total_time = Instant::now();
-    let number_of_curves = 128;
+    debug!("Starting factorization...");
+
+    // let number_of_curves = b1 / ((b1 as f64).ln() as u64);
+
+    let number_of_curves = 8;
+
+    let mut iteration = 1;
     loop {
-        let factor = (0..number_of_curves)
+        info!(
+            "Generating {} curves (iteration #{iteration})...",
+            number_of_curves
+        );
+        let curves = (0..number_of_curves)
             .into_par_iter()
-            .map(|_| {
-                
-                EllipticCurveFactorizationMethod::new(n.clone())
-            })
+            .map(|_| EllipticCurveFactorizationMethod::new(n.clone()))
+            .collect::<Vec<_>>();
+        iteration += 1;
+
+        let factor = curves
             .into_par_iter()
             .map(|ecm| {
+                let now = Instant::now();
                 let p = ecm.get_point_on_curve();
                 let p = p;
-                let mut q = p.clone();
-                for (&prime, &e) in primes_and_exponents.iter() {
+                for k in primes_raised.iter() {
+                    let (found, r) = ecm.point_multiplication(&p, k);
+                    if found {
+                        let elaped = Instant::now() - now;
+                        info!(
+                            "Thread #{} found factor {} in {:?}",
+                            current_thread_index().unwrap(),
+                            r.x,
+                            elaped
+                        );
+                        return (r.x, elaped);
+                    }
+                }
+                /*for k in primes_raised.iter() {:?
                     for _ in 0..prime.pow(e - 1) {
                         let (found, r) = ecm.add_points(&p, &q);
                         if found {
@@ -218,15 +244,43 @@ fn main() {
                         }
                         q = r.clone();
                     }
-                }
-                Zero::zero()
+                    while k < prime.pow(e - 1) {
+                        let (found, r) = ecm.add_points(&p, &q);
+                        if found {
+                            return r.x;
+                        }
+                        p = r.clone();
+                        q = r.clone();
+                        k *= 2;
+                    }
+                    debug!("Computing kP for k = {:?} and P = {:?} on curve {}", k, p, &ecm);
+                    let (found, r) = ecm.point_multiplication(&p, k);
+                    if found {
+                        return r.x;
+                    }
+                    p = r.clone();
+                    debug!("Done. (kP = {:?} on curve {})", p, &ecm);
+                }*/
+                let elapsed = Instant::now() - now;
+                info!(
+                    "Curve done in {:?} (thread #{}).",
+                    elapsed,
+                    current_thread_index().unwrap()
+                );
+                (Zero::zero(), elapsed)
             })
-            .find_any(|x| x.clone() != Zero::zero());
+            .find_any(|x| x.0.clone() != Zero::zero());
 
         if let Some(factor) = factor {
-            let time = total_time.elapsed();
-            info!("Found factor {factor} in {time:?}",);
+            let total_time = Instant::now() - total_time;
+            info!(
+                "Found factor {}, total time elapsed was {:?}",
+                factor.0, total_time
+            );
+            info!("N = {} * {}", factor.0.clone(), n / factor.0);
             break;
+        } else {
+            debug!("Exhausted all curves, generating new ones...");
         }
     }
 }
